@@ -34,12 +34,15 @@ static const char rcsid[] = "$Id: d_main.c,v 1.8 1997/02/03 22:45:09 b1 Exp $";
 #ifdef NORMALUNIX
 #include <stdio.h>
 #include <stdlib.h>
-#include <unistd.h>
+#include <io.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #endif
 
+#ifndef R_OK
+#define R_OK 04
+#endif
 
 #include "doomdef.h"
 #include "doomstat.h"
@@ -92,14 +95,14 @@ void D_DoomLoop (void);
 char*		wadfiles[MAXWADFILES];
 
 
-boolean		devparm;	// started game with -devparm
-boolean         nomonsters;	// checkparm of -nomonsters
-boolean         respawnparm;	// checkparm of -respawn
-boolean         fastparm;	// checkparm of -fast
+bool		devparm;	// started game with -devparm
+bool         nomonsters;	// checkparm of -nomonsters
+bool         respawnparm;	// checkparm of -respawn
+bool         fastparm;	// checkparm of -fast
 
-boolean         drone;
+bool         drone;
 
-boolean		singletics = false; // debug flag to cancel adaptiveness
+bool		singletics = false; // debug flag to cancel adaptiveness
 
 
 
@@ -107,16 +110,16 @@ boolean		singletics = false; // debug flag to cancel adaptiveness
 //extern  int	sfxVolume;
 //extern  int	musicVolume;
 
-extern  boolean	inhelpscreens;
+extern  bool	inhelpscreens;
 
 skill_t		startskill;
 int             startepisode;
 int		startmap;
-boolean		autostart;
+bool		autostart;
 
 FILE*		debugfile;
 
-boolean		advancedemo;
+bool		advancedemo;
 
 
 
@@ -186,25 +189,25 @@ void D_ProcessEvents (void)
 
 // wipegamestate can be set to -1 to force a wipe on the next draw
 gamestate_t     wipegamestate = GS_DEMOSCREEN;
-extern  boolean setsizeneeded;
+extern  bool setsizeneeded;
 extern  int             showMessages;
 void R_ExecuteSetViewSize (void);
 
 void D_Display (void)
 {
-    static  boolean		viewactivestate = false;
-    static  boolean		menuactivestate = false;
-    static  boolean		inhelpscreensstate = false;
-    static  boolean		fullscreen = false;
+    static  bool		viewactivestate = false;
+    static  bool		menuactivestate = false;
+    static  bool		inhelpscreensstate = false;
+    static  bool		fullscreen = false;
     static  gamestate_t		oldgamestate = -1;
     static  int			borderdrawcount;
     int				nowtime;
     int				tics;
     int				wipestart;
     int				y;
-    boolean			done;
-    boolean			wipe;
-    boolean			redrawsbar;
+    bool			done;
+    bool			wipe;
+    bool			redrawsbar;
 
     if (nodrawers)
 	return;                    // for comparative timing / profiling
@@ -349,7 +352,7 @@ void D_Display (void)
 //
 //  D_DoomLoop
 //
-extern  boolean         demorecording;
+extern  bool         demorecording;
 
 void D_DoomLoop (void)
 {
@@ -572,7 +575,6 @@ void IdentifyVersion (void)
     char*	plutoniawad;
     char*	tntwad;
 
-#ifdef NORMALUNIX
     char *home;
     char *doomwaddir;
     doomwaddir = getenv("DOOMWADDIR");
@@ -584,7 +586,7 @@ void IdentifyVersion (void)
     sprintf(doom2wad, "%s/doom2.wad", doomwaddir);
 
     // Retail.
-    doomuwad = malloc(strlen(doomwaddir)+1+8+1);
+    doomuwad = malloc(strlen(doomwaddir)+1+9+1);
     sprintf(doomuwad, "%s/doomu.wad", doomwaddir);
     
     // Registered.
@@ -608,9 +610,16 @@ void IdentifyVersion (void)
     doom2fwad = malloc(strlen(doomwaddir)+1+10+1);
     sprintf(doom2fwad, "%s/doom2f.wad", doomwaddir);
 
+#ifdef WIN32
+    home = getenv("APPDATA");
+#else
     home = getenv("HOME");
+#endif
     if (!home)
       I_Error("Please set $HOME to your home directory");
+#ifdef WIN32
+	sprintf(basedefault, "%s\\DOOM\\.doomrc", home);
+#else
     sprintf(basedefault, "%s/.doomrc", home);
 #endif
 

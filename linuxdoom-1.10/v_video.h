@@ -32,6 +32,8 @@
 // Needed because we are refering to patches.
 #include "r_data.h"
 
+#include "hu_lib.h"
+
 //
 // VIDEO
 //

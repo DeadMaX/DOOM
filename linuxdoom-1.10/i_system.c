@@ -29,8 +29,15 @@ rcsid[] = "$Id: m_bbox.c,v 1.1 1997/02/03 22:45:10 b1 Exp $";
 #include <string.h>
 
 #include <stdarg.h>
+#ifndef WIN32
 #include <sys/time.h>
 #include <unistd.h>
+#else
+#define WIN32_LEAN_AND_MEAN
+#include <Windows.h>
+#include <winsock2.h>
+#endif
+#include <stdint.h>
 
 #include "doomdef.h"
 #include "m_misc.h"
@@ -45,6 +52,35 @@ rcsid[] = "$Id: m_bbox.c,v 1.1 1997/02/03 22:45:10 b1 Exp $";
 #endif
 #include "i_system.h"
 
+#ifdef WIN32
+
+struct timezone
+{
+    bool b;
+};
+
+static int gettimeofday(struct timeval* tp, struct timezone* tzp)
+{
+    // Note: some broken versions only have 8 trailing zero's, the correct epoch has 9 trailing zero's
+    // This magic number is the number of 100 nanosecond intervals since January 1, 1601 (UTC)
+    // until 00:00:00 January 1, 1970 
+    static const uint64_t EPOCH = ((uint64_t)116444736000000000ULL);
+
+    SYSTEMTIME  system_time;
+    FILETIME    file_time;
+    uint64_t    time;
+
+    GetSystemTime(&system_time);
+    SystemTimeToFileTime(&system_time, &file_time);
+    time = ((uint64_t)file_time.dwLowDateTime);
+    time += ((uint64_t)file_time.dwHighDateTime) << 32;
+
+    tp->tv_sec = (long)((time - EPOCH) / 10000000L);
+    tp->tv_usec = (long)(system_time.wMilliseconds * 1000);
+    return 0;
+}
+
+#endif
 
 
 
@@ -107,6 +143,7 @@ int  I_GetTime (void)
 void I_Init (void)
 {
     I_InitSound();
+    I_InitMusic();
     //  I_InitGraphics();
 }
 
@@ -130,6 +167,16 @@ void I_WaitVBL(int count)
 #else
 #ifdef SUN
     sleep(0);
+#elif defined(WIN32)
+        HANDLE timer;
+        LARGE_INTEGER ft;
+
+        ft.QuadPart = -(10 * (__int64)(count * (1000000 / 70)));
+
+        timer = CreateWaitableTimer(NULL, TRUE, NULL);
+        SetWaitableTimer(timer, &ft, 0, NULL, NULL, 0);
+        WaitForSingleObject(timer, INFINITE);
+        CloseHandle(timer);
 #else
     usleep (count * (1000000/70) );                                
 #endif
@@ -157,7 +204,7 @@ byte*	I_AllocLow(int length)
 //
 // I_Error
 //
-extern boolean demorecording;
+extern bool demorecording;
 
 void I_Error (char *error, ...)
 {

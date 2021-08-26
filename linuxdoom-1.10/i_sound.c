@@ -27,8 +27,15 @@ rcsid[] = "$Id: i_unix.c,v 1.5 1997/02/03 22:45:10 b1 Exp $";
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
+#include <errno.h>
 
 #include <math.h>
+
+#ifdef WIN32
+
+#include <XAudio2.h>
+
+#else
 
 #include <sys/time.h>
 #include <sys/types.h>
@@ -43,6 +50,8 @@ rcsid[] = "$Id: i_unix.c,v 1.5 1997/02/03 22:45:10 b1 Exp $";
 
 // Linux voxware output.
 #include <linux/soundcard.h>
+
+#endif
 
 // Timer stuff. Experimental.
 #include <time.h>
@@ -90,26 +99,36 @@ static int flag = 0;
 
 
 // Needed for calling the actual sound output.
-#define SAMPLECOUNT		512
-#define NUM_CHANNELS		8
-// It is 2 for 16bit, and 2 for two channels.
-#define BUFMUL                  4
-#define MIXBUFFERSIZE		(SAMPLECOUNT*BUFMUL)
-
 #define SAMPLERATE		11025	// Hz
 #define SAMPLESIZE		2   	// 16bit
+
+#define SAMPLECOUNT		(SAMPLERATE / TICRATE)
+#define NUM_CHANNELS		8
+// It is 2 for 16bit, and 2 for two channels.
+#define BUFMUL                  2
+#define MIXBUFFERSIZE		(SAMPLECOUNT*BUFMUL)
+
+
 
 // The actual lengths of all sound effects.
 int 		lengths[NUMSFX];
 
 // The actual output device.
+#ifdef WIN32
+IXAudio2* pXAudio2;
+IXAudio2MasteringVoice* pMasterVoice;
+IXAudio2SourceVoice* pSourceVoice;
+XAUDIO2_BUFFER audio_buffer[2];
+#else
 int	audio_fd;
+#endif
 
 // The global mixing buffer.
 // Basically, samples from all active internal channels
 //  are modifed and added, and stored in the buffer
 //  that is submitted to the audio device.
-signed short	mixbuffer[MIXBUFFERSIZE];
+static signed short	mixbuffer[2][MIXBUFFERSIZE];
+static unsigned int curr_mixbuffer = 0;
 
 
 // The channel step amount...
@@ -151,7 +170,7 @@ int*		channelleftvol_lookup[NUM_CHANNELS];
 int*		channelrightvol_lookup[NUM_CHANNELS];
 
 
-
+#ifndef WIN32
 
 //
 // Safe ioctl, convenience.
@@ -163,7 +182,6 @@ myioctl
   int*	arg )
 {   
     int		rc;
-    extern int	errno;
     
     rc = ioctl(fd, command, arg);  
     if (rc < 0)
@@ -175,7 +193,7 @@ myioctl
 }
 
 
-
+#endif
 
 
 //
@@ -562,13 +580,13 @@ void I_UpdateSound( void )
     
     // Left and right channel
     //  are in global mixbuffer, alternating.
-    leftout = mixbuffer;
-    rightout = mixbuffer+1;
+    leftout = mixbuffer[curr_mixbuffer];
+    rightout = leftout+1;
     step = 2;
 
     // Determine end, for left channel only
     //  (right channel is implicit).
-    leftend = mixbuffer + SAMPLECOUNT*step;
+    leftend = leftout + SAMPLECOUNT*step;
 
     // Mix sounds into the mixing buffer.
     // Loop over step*SAMPLECOUNT,
@@ -634,6 +652,7 @@ void I_UpdateSound( void )
 	rightout += step;
     }
 
+    curr_mixbuffer = 1 - curr_mixbuffer;
 #ifdef SNDINTR
     // Debug check.
     if ( flag )
@@ -665,8 +684,24 @@ void I_UpdateSound( void )
 void
 I_SubmitSound(void)
 {
+#ifdef WIN32
+
+    XAUDIO2_VOICE_STATE soundState = { 0 };
+
+    HRESULT res = IXAudio2SourceVoice_SubmitSourceBuffer(pSourceVoice, &audio_buffer[1 - curr_mixbuffer], NULL);
+    if (FAILED(res))
+    {
+        exit(-1);
+    }
+
+    do
+    {
+        IXAudio2SourceVoice_GetState(pSourceVoice, &soundState, 0);
+    } while (soundState.BuffersQueued > 1);
+#else
   // Write it to DSP device.
   write(audio_fd, mixbuffer, SAMPLECOUNT*BUFMUL);
+#endif
 }
 
 
@@ -721,8 +756,18 @@ void I_ShutdownSound(void)
   I_SoundDelTimer();
 #endif
   
+#ifdef WIN32
+  IXAudio2SourceVoice_Stop(pSourceVoice, 0, XAUDIO2_COMMIT_NOW);
+  IXAudio2SourceVoice_DestroyVoice(pSourceVoice);
+  pSourceVoice = NULL;
+  IXAudio2Voice_DestroyVoice(pMasterVoice);
+  pMasterVoice = NULL;
+  IXAudio2_Release(pXAudio2);
+  pXAudio2 = NULL;
+#else
   // Cleaning up -releasing the DSP device.
   close ( audio_fd );
+#endif
 #endif
 
   // Done.
@@ -766,6 +811,68 @@ I_InitSound()
     
   // Secure and configure sound device first.
   fprintf( stderr, "I_InitSound: ");
+
+#ifdef WIN32
+
+  audio_buffer[0].pAudioData = mixbuffer[0];
+  audio_buffer[0].Flags = 0;
+  audio_buffer[0].AudioBytes = sizeof(mixbuffer[0]);
+  audio_buffer[1].pAudioData = mixbuffer[1];
+  audio_buffer[1].Flags = 0;
+  audio_buffer[1].AudioBytes = sizeof(mixbuffer[1]);
+
+  HRESULT res = CoInitialize(NULL);
+  if (FAILED(res))
+  {
+      exit(-1);
+  }
+
+  res = XAudio2Create(&pXAudio2, 0, XAUDIO2_DEFAULT_PROCESSOR);
+  if (FAILED(res))
+  {
+      pXAudio2 = NULL;
+      exit(-1);
+  }
+
+  res = IXAudio2_CreateMasteringVoice(pXAudio2, &pMasterVoice, XAUDIO2_DEFAULT_CHANNELS, XAUDIO2_DEFAULT_SAMPLERATE, 0, NULL, NULL, AudioCategory_GameEffects);
+    if (FAILED(res))
+    {
+        IXAudio2_Release(pXAudio2);
+        pXAudio2 = NULL;
+        exit(-1);
+    }
+
+    WAVEFORMATEX fmt = { 0 };
+    fmt.wFormatTag = WAVE_FORMAT_PCM;
+    fmt.nChannels = 2; // stereo
+    fmt.nSamplesPerSec = SAMPLERATE;
+    fmt.wBitsPerSample = 16;
+    fmt.nAvgBytesPerSec = fmt.nSamplesPerSec * fmt.nChannels * fmt.wBitsPerSample / 8;
+    fmt.nBlockAlign = (fmt.wBitsPerSample * fmt.nChannels) / 8;
+    fmt.cbSize = 0;
+
+    res = IXAudio2_CreateSourceVoice(pXAudio2, &pSourceVoice, &fmt,
+        0,
+        XAUDIO2_DEFAULT_FREQ_RATIO,
+        NULL,
+        NULL,
+        NULL
+    );
+    if (FAILED(res))
+    {
+        IXAudio2Voice_DestroyVoice(pMasterVoice);
+        pMasterVoice = NULL;
+        IXAudio2_Release(pXAudio2);
+        pXAudio2 = NULL;
+        exit(-1);
+    }
+
+    res = IXAudio2SourceVoice_Start(pSourceVoice, 0, XAUDIO2_COMMIT_NOW);
+    if (FAILED(res))
+    {
+        exit(-1);
+    }
+#else
   
   audio_fd = open("/dev/dsp", O_WRONLY);
   if (audio_fd<0)
@@ -789,6 +896,7 @@ I_InitSound()
     myioctl(audio_fd, SNDCTL_DSP_SETFMT, &i);
   else
     fprintf(stderr, "Could not play signed 16 data\n");
+#endif
 
   fprintf(stderr, " configured audio device\n" );
 
@@ -815,8 +923,9 @@ I_InitSound()
   fprintf( stderr, " pre-cached all sound data\n");
   
   // Now initialize mixbuffer with zero.
+  for (int j = 0; j < 2; ++j)
   for ( i = 0; i< MIXBUFFERSIZE; i++ )
-    mixbuffer[i] = 0;
+    mixbuffer[j][i] = 0;
   
   // Finished initialization.
   fprintf(stderr, "I_InitSound: sound module ready\n");
@@ -824,37 +933,364 @@ I_InitSound()
 #endif
 }
 
+typedef struct
+{
+    char tag[4];
+    unsigned short lenSong;
+    unsigned short offSong;
+    unsigned short primaryChannels;
+    unsigned short secondaryChannels;
+    unsigned short numInstruments;
+    unsigned short reserved;
+    unsigned short inst[13];
+} mus_t;
 
+typedef struct
+{
+    bool used;
+    mus_t* data;
+} music_t;
 
+#define MAX_MUSIC 32
+music_t musics[MAX_MUSIC];
 
+HMIDISTRM     outHandle;
+UINT deviceID;
+PATCHARRAY patches;
+PATCHARRAY drum_patches;
+MIDIHDR header;
 //
 // MUSIC API.
 // Still no music done.
 // Remains. Dummies.
 //
-void I_InitMusic(void)		{ }
-void I_ShutdownMusic(void)	{ }
+void I_InitMusic(void)
+{
+    MMRESULT res;
+
+    MIDIOUTCAPS caps;
+    for (deviceID = 0;; ++deviceID)
+    {
+        res = midiOutGetDevCaps(deviceID, &caps, sizeof(caps));
+        if (res)
+            exit(-1);
+        if (caps.wVoices > 10)
+            break;
+    }
+    
+    res = midiStreamOpen(&outHandle, &deviceID, 1, NULL, NULL, CALLBACK_NULL);
+    if (FAILED(res))
+        exit(-1);
+#if 1
+    MIDIPROPTIMEDIV timediv;
+    timediv.cbStruct = sizeof(MIDIPROPTIMEDIV);
+    timediv.dwTimeDiv = 70;
+    res = midiStreamProperty(outHandle, (LPBYTE)&timediv, MIDIPROP_SET | MIDIPROP_TIMEDIV);
+    if (FAILED(res))
+        exit(-1);
+#else
+    MIDIPROPTEMPO tempo;
+    tempo.cbStruct = sizeof(MIDIPROPTEMPO);
+    tempo.dwTempo = 60000000 / 360;
+    res = midiStreamProperty(outHandle, (LPBYTE)&tempo, MIDIPROP_SET | MIDIPROP_TEMPO);
+    if (FAILED(res))
+        exit(-1);
+#endif
+}
+
+void I_ShutdownMusic(void)
+{
+    midiStreamClose(outHandle);
+}
+
+static unsigned int minofuint(unsigned int a, unsigned int b)
+{
+    return min(a, b);
+}
 
 static int	looping=0;
 static int	musicdies=-1;
 
+static void convert_mus(byte* mus)
+{
+    typedef enum
+    {
+        mus_releasekey = 0x00,
+        mus_presskey = 0x10,
+        mus_pitchwheel = 0x20,
+        mus_systemevent = 0x30,
+        mus_changecontroller = 0x40,
+        mus_endmesure = 0x50,
+        mus_scoreend = 0x60
+    } musevent;
+
+    static DWORD buffer[0xffff / sizeof(DWORD)];
+    byte velocities[16] = { 0x7f, 0x7f, 0x7f, 0x7f, 0x7f, 0x7f, 0x7f, 0x7f, 
+                            0x7f, 0x7f, 0x7f, 0x7f, 0x7f, 0x7f, 0x7f, 0x7f};
+
+    header.lpData = buffer;
+    header.dwBytesRecorded = 0;
+    header.dwBufferLength = sizeof(buffer);
+    header.dwFlags = 0;
+
+    byte* p = mus;
+    DWORD timer = 0;
+
+    while (true)
+    {
+        byte channel = *p & 0x0F;
+        bool have_delay = !!(*p & 0x80);
+
+        // swap percussion channel of MIDI vs MUS
+        if (channel == 15)
+            channel = 9;
+        else if (channel == 9)
+            channel = 15;
+
+        switch (*p++ & 0x70)
+        {
+        case mus_releasekey:
+            buffer[header.dwBytesRecorded++] = timer; timer = 0;
+            buffer[header.dwBytesRecorded++] = 0;
+            buffer[header.dwBytesRecorded++] = (velocities[channel] << 16) | (((*p++) &0x7f) << 8) | (0x80) | channel;
+            break;
+
+        case mus_presskey:
+            buffer[header.dwBytesRecorded++] = timer; timer = 0;
+            buffer[header.dwBytesRecorded++] = 0;
+            if (!!(*p & 0x80))
+            {
+                byte note = (*p++) & 0x7f;
+                velocities[channel] = (*p++) & 0x7f;
+                buffer[header.dwBytesRecorded++] = (velocities[channel] << 16) | (note << 8) | (0x90) | channel;
+            }
+            else
+                buffer[header.dwBytesRecorded++] = (velocities[channel] << 16) | (((*p++) & 0x7f) << 8) | (0x90) | channel;
+            break;
+
+
+        case mus_pitchwheel:
+        {
+            DWORD pitch = (*p++) * 64;
+            pitch = (pitch & 0x7f) | (pitch & 0x3f80) << 1;
+            buffer[header.dwBytesRecorded++] = timer; timer = 0;
+            buffer[header.dwBytesRecorded++] = 0;
+            buffer[header.dwBytesRecorded++] = (pitch << 8) | (0xE0) | channel;
+        }
+            break;
+
+        case mus_systemevent:
+            switch (*p++)
+            {
+            case 10:
+                buffer[header.dwBytesRecorded++] = timer; timer = 0;
+                buffer[header.dwBytesRecorded++] = 0;
+                buffer[header.dwBytesRecorded++] = 0x78;
+                break;
+
+            case 11:
+                buffer[header.dwBytesRecorded++] = timer; timer = 0;
+                buffer[header.dwBytesRecorded++] = 0;
+                buffer[header.dwBytesRecorded++] = 0x7B;
+                break;
+
+            case 12:
+                buffer[header.dwBytesRecorded++] = timer; timer = 0;
+                buffer[header.dwBytesRecorded++] = 0;
+                buffer[header.dwBytesRecorded++] = 0x7E;
+                break;
+
+            case 13:
+                buffer[header.dwBytesRecorded++] = timer; timer = 0;
+                buffer[header.dwBytesRecorded++] = 0;
+                buffer[header.dwBytesRecorded++] = 0x7F;
+                break;
+
+            case 14:
+                buffer[header.dwBytesRecorded++] = timer; timer = 0;
+                buffer[header.dwBytesRecorded++] = 0;
+                buffer[header.dwBytesRecorded++] = 0x79;
+                break;
+
+            case 15:
+                break;
+
+            default:
+                header.dwBytesRecorded = 0;
+                return;
+            }
+            break;
+
+        case mus_changecontroller:
+            switch (*p++)
+            {
+            case 0:
+                // change instrument
+                buffer[header.dwBytesRecorded++] = timer; timer = 0;
+                buffer[header.dwBytesRecorded++] = 0;
+                buffer[header.dwBytesRecorded++] = (((*p++) & 0x7f) << 8) | (0xC0) | channel;
+                break;
+
+            case 1:
+                buffer[header.dwBytesRecorded++] = timer; timer = 0;
+                buffer[header.dwBytesRecorded++] = 0;
+                buffer[header.dwBytesRecorded++] = (minofuint(*p++, 0x7f) << 16) | (0x20 << 8) | (0xB0) | channel;
+            break;
+
+            case 2:
+                buffer[header.dwBytesRecorded++] = timer; timer = 0;
+                buffer[header.dwBytesRecorded++] = 0;
+                buffer[header.dwBytesRecorded++] = (minofuint(*p++, 0x7f) << 16) | (0x01 << 8) | (0xB0) | channel;
+            break;
+
+            case 3:
+                buffer[header.dwBytesRecorded++] = timer; timer = 0;
+                buffer[header.dwBytesRecorded++] = 0;
+                buffer[header.dwBytesRecorded++] = (minofuint(*p++, 0x7f) << 16) | (0x07 << 8) | (0xB0) | channel;
+            break;
+
+            case 4:
+                buffer[header.dwBytesRecorded++] = timer; timer = 0;
+                buffer[header.dwBytesRecorded++] = 0;
+                buffer[header.dwBytesRecorded++] = (minofuint(*p++, 0x7f) << 16) | (0x0A << 8) | (0xB0) | channel;
+            break;
+
+            case 5:
+                buffer[header.dwBytesRecorded++] = timer; timer = 0;
+                buffer[header.dwBytesRecorded++] = 0;
+                buffer[header.dwBytesRecorded++] = (minofuint(*p++, 0x7f) << 16) | (0x0B << 8) | (0xB0) | channel;
+            break;
+
+            case 6:
+                buffer[header.dwBytesRecorded++] = timer; timer = 0;
+                buffer[header.dwBytesRecorded++] = 0;
+                buffer[header.dwBytesRecorded++] = (minofuint(*p++, 0x7f) << 16) | (0x5B << 8) | (0xB0) | channel;
+            break;
+
+            case 7:
+                buffer[header.dwBytesRecorded++] = timer; timer = 0;
+                buffer[header.dwBytesRecorded++] = 0;
+                buffer[header.dwBytesRecorded++] = (minofuint(*p++, 0x7f) << 16) | (0x5D << 8) | (0xB0) | channel;
+            break;
+
+            case 8:
+                buffer[header.dwBytesRecorded++] = timer; timer = 0;
+                buffer[header.dwBytesRecorded++] = 0;
+                buffer[header.dwBytesRecorded++] = (minofuint(*p++, 0x7f) << 16) | (0x40 << 8) | (0xB0) | channel;
+            break;
+
+            case 9:
+                buffer[header.dwBytesRecorded++] = timer; timer = 0;
+                buffer[header.dwBytesRecorded++] = 0;
+                buffer[header.dwBytesRecorded++] = (minofuint(*p++, 0x7f) << 16) | (0x43 << 8) | (0xB0) | channel;
+                break;
+
+            default:
+                header.dwBytesRecorded = 0;
+                return;
+                break;
+            }
+            break;
+
+        case mus_endmesure:
+            break;
+
+        case mus_scoreend:
+            buffer[header.dwBytesRecorded++] = timer; timer = 0;
+            buffer[header.dwBytesRecorded++] = 0;
+            buffer[header.dwBytesRecorded++] = 0x78;
+            header.dwBytesRecorded *= sizeof(DWORD);
+            return;
+            break;
+
+        default:
+            header.dwBytesRecorded = 0;
+            return;
+            break;
+        }
+        if (have_delay)
+        {
+            int add_delay = 0;
+            bool continue_read = true;
+            while (continue_read)
+            {
+                continue_read = !!(*p & 0x80);
+                add_delay <<= 7;
+                add_delay += *p++ & 0x7f;
+            }
+            timer += add_delay;
+        }
+    }
+}
+
 void I_PlaySong(int handle, int looping)
 {
   // UNUSED.
-  handle = looping = 0;
+  looping = 0;
+  handle--;
+
   musicdies = gametic + TICRATE*30;
+  int cur_patch = 0;
+  int cur_drum_patch = 0;
+
+  memset(&patches, 0, sizeof(patches));
+  memset(&drum_patches, 0, sizeof(drum_patches));
+  for (int i = 0; i < musics[handle].data->numInstruments; i++)
+  {
+      if (musics[handle].data->inst[i] < 128)
+          patches[cur_patch++] = musics[handle].data->inst[i];
+      else
+          drum_patches[cur_drum_patch] = musics[handle].data->inst[i] - 100;
+  }
+  
+  MMRESULT res = midiOutCachePatches(
+      (HMIDIOUT)outHandle,
+      0,
+      patches,
+      MIDI_CACHE_ALL
+    );
+  if (FAILED(res))
+      exit(-1);
+
+   res = midiOutCacheDrumPatches(
+       (HMIDIOUT)outHandle,
+       0,
+       drum_patches,
+       MIDI_CACHE_ALL
+    );
+   if (FAILED(res))
+       exit(-1);
+
+   convert_mus(((byte*)musics[handle].data) + musics[handle].data->offSong);
+
+   res = midiOutPrepareHeader((HMIDIOUT)outHandle, &header, sizeof(MIDIHDR));
+   if (FAILED(res))
+       exit(-1);
+   res = midiStreamOut(
+       outHandle,
+       &header,
+       sizeof(MIDIHDR)
+      );
+
+   if (FAILED(res))
+       exit(-1);
+   res = midiStreamRestart(outHandle);
+   if (FAILED(res))
+       exit(-1);
 }
 
 void I_PauseSong (int handle)
 {
   // UNUSED.
   handle = 0;
+  midiStreamPause(outHandle);
 }
 
 void I_ResumeSong (int handle)
 {
   // UNUSED.
   handle = 0;
+  midiStreamRestart(outHandle);
 }
 
 void I_StopSong(int handle)
@@ -864,20 +1300,28 @@ void I_StopSong(int handle)
   
   looping = 0;
   musicdies = 0;
+  midiStreamStop(outHandle);
+  midiOutUnprepareHeader((HMIDIOUT)outHandle, &header, sizeof(MIDIHDR));
 }
 
 void I_UnRegisterSong(int handle)
 {
-  // UNUSED.
-  handle = 0;
+    musics[handle].used = false;
+    musics[handle].data = NULL;
 }
 
 int I_RegisterSong(void* data)
 {
-  // UNUSED.
-  data = NULL;
-  
-  return 1;
+    for (int i = 0; i < MAX_MUSIC; ++i)
+    {
+        if (musics[i].used)
+            continue;
+
+        musics[i].used = true;
+        musics[i].data = data;
+        return i + 1;
+    }
+  return 0;
 }
 
 // Is the song playing?
@@ -889,6 +1333,30 @@ int I_QrySongPlaying(int handle)
 }
 
 
+#ifdef WIN32
+
+void I_HandleSoundTimer(UINT uTimerID, UINT uMsg, DWORD_PTR dwUser, DWORD_PTR dw1, DWORD_PTR dw2)
+{
+    if (flag)
+    {
+        I_SubmitSound();
+        flag = 0;
+    }
+}
+
+int I_SoundSetTimer(int duration_of_tick)
+{
+    MMRESULT res = timeSetEvent(
+        duration_of_tick, // delay
+        0,                     // resolution (global variable)
+        (LPTIMECALLBACK)&I_HandleSoundTimer,   // callback function
+        0,                     // user data
+        TIME_PERIODIC);
+    if (FAILED(res))
+        exit(-1);
+}
+
+#else
 
 //
 // Experimental stuff.
@@ -975,6 +1443,8 @@ int I_SoundSetTimer( int duration_of_tick )
   return res;
 }
 
+
+#endif
 
 // Remove the interrupt. Set duration to zero.
 void I_SoundDelTimer()

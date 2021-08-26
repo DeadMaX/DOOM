@@ -25,6 +25,14 @@ static const char
 rcsid[] = "$Id: i_x.c,v 1.6 1997/02/03 22:45:10 b1 Exp $";
 
 #include <stdlib.h>
+
+#ifdef WIN32
+
+#include <Windows.h>
+#include <windowsx.h>
+
+#else
+
 #include <unistd.h>
 #include <sys/ipc.h>
 #include <sys/shm.h>
@@ -46,8 +54,10 @@ int XShmGetEventBase( Display* dpy ); // problems with g++?
 #include <sys/socket.h>
 
 #include <netinet/in.h>
-#include <errnos.h>
+#include <errno.h>
 #include <signal.h>
+
+#endif
 
 #include "doomstat.h"
 #include "i_system.h"
@@ -58,6 +68,16 @@ int XShmGetEventBase( Display* dpy ); // problems with g++?
 #include "doomdef.h"
 
 #define POINTER_WARP_COUNTDOWN	1
+
+#ifdef WIN32
+
+WNDCLASSEX winclass;
+HWND hWnd;
+HINSTANCE hInstance;
+BITMAPINFO* pBmi;
+RGBQUAD* palette;
+
+#else
 
 Display*	X_display=0;
 Window		X_mainWindow;
@@ -72,15 +92,17 @@ int		X_width;
 int		X_height;
 
 // MIT SHared Memory extension.
-boolean		doShm;
+bool		doShm;
 
 XShmSegmentInfo	X_shminfo;
 int		X_shmeventtype;
 
+#endif
+
 // Fake mouse handling.
 // This cannot work properly w/o DGA.
 // Needs an invisible mouse cursor at least.
-boolean		grabMouse;
+bool		grabMouse;
 int		doPointerWarp = POINTER_WARP_COUNTDOWN;
 
 // Blocky mode,
@@ -93,10 +115,93 @@ static int	multiply=1;
 //
 //  Translates the key currently in X_event
 //
+#ifdef WIN32
+static int xlatekey(WPARAM wParam)
+{
+	int rc;
+
+	switch (wParam)
+	{
+	case VK_LEFT:	rc = KEY_LEFTARROW;	break;
+	case VK_RIGHT:	rc = KEY_RIGHTARROW;	break;
+	case VK_DOWN:	rc = KEY_DOWNARROW;	break;
+	case VK_UP:	rc = KEY_UPARROW;	break;
+	case VK_ESCAPE:	rc = KEY_ESCAPE;	break;
+	case VK_RETURN:	rc = KEY_ENTER;		break;
+	case VK_TAB:	rc = KEY_TAB;		break;
+	case VK_F1:	rc = KEY_F1;		break;
+	case VK_F2:	rc = KEY_F2;		break;
+	case VK_F3:	rc = KEY_F3;		break;
+	case VK_F4:	rc = KEY_F4;		break;
+	case VK_F5:	rc = KEY_F5;		break;
+	case VK_F6:	rc = KEY_F6;		break;
+	case VK_F7:	rc = KEY_F7;		break;
+	case VK_F8:	rc = KEY_F8;		break;
+	case VK_F9:	rc = KEY_F9;		break;
+	case VK_F10:	rc = KEY_F10;		break;
+	case VK_F11:	rc = KEY_F11;		break;
+	case VK_F12:	rc = KEY_F12;		break;
+
+	case VK_BACK:
+	case VK_DELETE:	rc = KEY_BACKSPACE;	break;
+
+	case VK_PAUSE:	rc = KEY_PAUSE;		break;
+
+	case VK_SHIFT:
+	case VK_LSHIFT:
+	case VK_RSHIFT:
+		rc = KEY_RSHIFT;
+		break;
+
+	case VK_CONTROL:
+	case VK_LCONTROL:
+	case VK_RCONTROL:
+		rc = KEY_RCTRL;
+		break;
+
+	case VK_MENU:
+	case VK_LMENU:
+	case VK_LWIN:
+	case VK_RMENU:
+	case VK_RWIN:
+		rc = KEY_RALT;
+		break;
+
+	case VK_ADD:
+		rc = '=';
+		break;
+
+	case VK_SUBTRACT:
+		rc = '-';
+		break;
+
+	default:
+		if (wParam >= 'A' && wParam <= 'Z')
+			rc = wParam - 'A' + 'a';
+		else if (wParam >= '0' && wParam <= '9')
+			rc = wParam;
+		else if (wParam == ' ')
+			rc = ' ';
+		else if (wParam == VK_OEM_PLUS)
+			rc = '=';
+		else if (wParam == VK_OEM_COMMA)
+			rc = ',';
+		else if (wParam == VK_OEM_MINUS)
+			rc = '-';
+		else if (wParam == VK_OEM_PERIOD)
+			rc = '.';
+		else
+			rc = 0;
+		break;
+	}
+
+	return rc;
+}
+
+#else
 
 int xlatekey(void)
 {
-
     int rc;
 
     switch(rc = XKeycodeToKeysym(X_display, X_event.xkey.keycode, 0))
@@ -158,11 +263,13 @@ int xlatekey(void)
     }
 
     return rc;
-
 }
+#endif
 
 void I_ShutdownGraphics(void)
 {
+#ifdef WIN32
+#else
   // Detach from X server
   if (!XShmDetach(X_display, &X_shminfo))
 	    I_Error("XShmDetach() failed in I_ShutdownGraphics()");
@@ -173,6 +280,7 @@ void I_ShutdownGraphics(void)
 
   // Paranoia.
   image->data = NULL;
+#endif
 }
 
 
@@ -188,14 +296,112 @@ void I_StartFrame (void)
 
 static int	lastmousex = 0;
 static int	lastmousey = 0;
-boolean		mousemoved = false;
-boolean		shmFinished;
+bool		mousemoved = false;
+
+#ifdef WIN32
+bool I_GetEvent(void)
+{
+	event_t event;
+	MSG msg;
+
+	if (!PeekMessage(&msg, hWnd, 0, 0, PM_REMOVE))
+		return false;
+	{
+		switch (msg.message)
+		{
+		case WM_SYSKEYDOWN:
+			event.type = ev_keydown;
+			event.data1 = KEY_RALT;
+			D_PostEvent(&event);			
+			break;
+
+		case WM_SYSKEYUP:
+			event.type = ev_keyup;
+			event.data1 = KEY_RALT;
+			D_PostEvent(&event);
+			break;
+
+		case WM_KEYDOWN:
+			event.type = ev_keydown;
+			event.data1 = xlatekey(msg.wParam);
+			D_PostEvent(&event);
+			break;
+
+		case WM_KEYUP:
+			event.type = ev_keyup;
+			event.data1 = xlatekey(msg.wParam);
+			D_PostEvent(&event);
+			break;
+
+		case WM_LBUTTONDOWN:
+		case WM_RBUTTONDOWN:
+		case WM_MBUTTONDOWN:
+			event.data1 = (msg.wParam & MK_LBUTTON ? 1 : 0)
+				| (msg.wParam & MK_RBUTTON ? 2 : 0)
+				| (msg.wParam & MK_MBUTTON ? 4 : 0);
+			event.data2 = event.data3 = 0;
+			D_PostEvent(&event);
+			// fprintf(stderr, "b");
+			break;
+
+		case WM_LBUTTONUP:
+		case WM_RBUTTONUP:
+		case WM_MBUTTONUP:
+			event.data1 = (msg.wParam & MK_LBUTTON ? 1 : 0)
+				| (msg.wParam & MK_RBUTTON ? 2 : 0)
+				| (msg.wParam & MK_MBUTTON ? 4 : 0);
+			event.data2 = event.data3 = 0;
+			D_PostEvent(&event);
+			// fprintf(stderr, "b");
+			break;
+
+
+		case WM_MOUSEMOVE:
+			event.type = ev_mouse;
+			event.data1 = (msg.wParam & MK_LBUTTON ? 1 : 0)
+				| (msg.wParam & MK_RBUTTON ? 2 : 0)
+				| (msg.wParam & MK_MBUTTON ? 4 : 0);
+			event.data2 = (GET_X_LPARAM(msg.lParam) - lastmousex) << 2;
+			event.data3 = (lastmousey - GET_Y_LPARAM(msg.lParam)) << 2;
+
+			if (event.data2 || event.data3)
+			{
+				lastmousex = GET_X_LPARAM(msg.lParam);
+				lastmousey = GET_Y_LPARAM(msg.lParam);
+				if (GET_X_LPARAM(msg.lParam) != SCREENWIDTH / 2 &&
+					GET_Y_LPARAM(msg.lParam) != SCREENHEIGHT / 2)
+				{
+					D_PostEvent(&event);
+					mousemoved = false;
+				}
+				else
+				{
+					mousemoved = true;
+				}
+			}
+			break;
+
+		case WM_QUIT:
+		case WM_DESTROY:        // kill command
+			return false;
+
+		case WM_ERASEBKGND:
+			return false;
+
+		default:
+			DefWindowProc(hWnd, msg.message, msg.wParam, msg.lParam);
+		}
+	}
+	return true;
+}
+
+#else
+
+bool		shmFinished;
 
 void I_GetEvent(void)
 {
-
     event_t event;
-
     // put event-grabbing stuff in here
     XNextEvent(X_display, &X_event);
     switch (X_event.type)
@@ -275,7 +481,6 @@ void I_GetEvent(void)
 	if (doShm && X_event.type == X_shmeventtype) shmFinished = true;
 	break;
     }
-
 }
 
 Cursor
@@ -302,13 +507,19 @@ createnullcursor
     XFreeGC(display,gc);
     return cursor;
 }
+#endif
 
 //
 // I_StartTic
 //
 void I_StartTic (void)
 {
+#ifdef WIN32
+	MSG msg;
+	while(PeekMessage(&msg, hWnd, 0, 0, PM_NOREMOVE))
+		I_GetEvent();
 
+#else
     if (!X_display)
 	return;
 
@@ -334,7 +545,7 @@ void I_StartTic (void)
     }
 
     mousemoved = false;
-
+#endif
 }
 
 
@@ -349,9 +560,25 @@ void I_UpdateNoBlit (void)
 //
 // I_FinishUpdate
 //
+
 void I_FinishUpdate (void)
 {
+#ifdef WIN32
+	HDC             hdc;
+	hdc = GetDC(hWnd);
 
+	StretchDIBits(hdc, 0, 0,
+		320,
+		200,
+		0, 0,
+		320,
+		200,
+		screens[0],
+		pBmi,
+		DIB_RGB_COLORS, SRCCOPY);
+
+	ReleaseDC(hWnd, hdc);
+#else
     static int	lasttic;
     int		tics;
     int		i;
@@ -517,7 +744,7 @@ void I_FinishUpdate (void)
 	XSync(X_display, False);
 
     }
-
+#endif
 }
 
 
@@ -529,7 +756,7 @@ void I_ReadScreen (byte* scr)
     memcpy (scr, screens[0], SCREENWIDTH*SCREENHEIGHT);
 }
 
-
+#ifndef WIN32
 //
 // Palette stuff.
 //
@@ -540,7 +767,7 @@ void UploadNewPalette(Colormap cmap, byte *palette)
 
     register int	i;
     register int	c;
-    static boolean	firstcall = true;
+    static bool	firstcall = true;
 
 #ifdef __cplusplus
     if (X_visualinfo.c_class == PseudoColor && X_visualinfo.depth == 8)
@@ -576,15 +803,31 @@ void UploadNewPalette(Colormap cmap, byte *palette)
 	}
 }
 
+#endif
+
 //
 // I_SetPalette
 //
-void I_SetPalette (byte* palette)
+void I_SetPalette (byte* pal)
 {
+#ifdef WIN32
+	int	c;
+
+	for (int i = 0; i < 256; ++i) {
+			c = gammatable[usegamma][*pal++];
+			palette[i].rgbRed = (c << 8) + c;
+			c = gammatable[usegamma][*pal++];
+			palette[i].rgbGreen = (c << 8) + c;
+			c = gammatable[usegamma][*pal++];
+			palette[i].rgbBlue = (c << 8) + c;
+			palette[i].rgbReserved = 0;
+		}
+#else
     UploadNewPalette(X_cmap, palette);
+#endif
 }
 
-
+#ifndef WIN32
 //
 // This function is probably redundant,
 //  if XShmDetach works properly.
@@ -688,10 +931,82 @@ void grabsharedmemory(int size)
   fprintf(stderr, "shared memory id=%d, addr=0x%x\n", id,
 	  (int) (image->data));
 }
+#endif
+
+LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+	if (uMsg == WM_DESTROY) { // kill command
+		exit(wParam);         // bail out
+	}
+	return DefWindowProc(hwnd, uMsg, wParam, lParam);
+}
 
 void I_InitGraphics(void)
 {
+#ifdef WIN32
 
+	hInstance = GetModuleHandle(0);
+
+	winclass.cbSize = sizeof(WNDCLASSEX);
+	winclass.style = CS_DBLCLKS;
+	winclass.lpfnWndProc = &WindowProc;
+	winclass.cbClsExtra = 0;
+	winclass.cbWndExtra = 0;
+	winclass.hInstance = hInstance;
+	winclass.hIcon = LoadIcon(NULL, IDI_APPLICATION);
+	winclass.hCursor = LoadCursor(NULL, IDC_ARROW);
+	winclass.hbrBackground = GetSysColorBrush(COLOR_APPWORKSPACE);
+	winclass.lpszMenuName = NULL;
+	winclass.lpszClassName = "DOOM";
+	winclass.hIconSm = NULL;
+
+	if (!RegisterClassEx(&winclass))
+		return 0;
+
+	hWnd = CreateWindow(
+		"DOOM",
+		"DOOM",
+		WS_SYSMENU | WS_CAPTION | WS_BORDER | WS_OVERLAPPED | WS_VISIBLE | WS_MINIMIZEBOX,
+		CW_USEDEFAULT,
+		0,
+		SCREENWIDTH,
+		SCREENHEIGHT,
+		NULL,
+		NULL,
+		hInstance,
+		NULL);
+
+	if (IsWindow(hWnd))
+	{
+
+		DWORD dwStyle = GetWindowLongPtr(hWnd, GWL_STYLE);
+		DWORD dwExStyle = GetWindowLongPtr(hWnd, GWL_EXSTYLE);
+		HMENU menu = GetMenu(hWnd);
+
+		RECT rc = { 0, 0, SCREENWIDTH, SCREENHEIGHT };
+
+		AdjustWindowRectEx(&rc, dwStyle, menu ? TRUE : FALSE, dwExStyle);
+
+		SetWindowPos(hWnd, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOZORDER | SWP_NOMOVE);
+
+	}
+
+	pBmi = malloc(sizeof(BITMAPINFO) + sizeof(RGBQUAD) * 255);
+	palette = &pBmi->bmiColors[0];
+
+	pBmi->bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+	pBmi->bmiHeader.biWidth = SCREENWIDTH;
+	pBmi->bmiHeader.biHeight = - SCREENHEIGHT;
+	pBmi->bmiHeader.biPlanes = 1;
+	pBmi->bmiHeader.biBitCount = 8;
+	pBmi->bmiHeader.biCompression = BI_RGB;
+	pBmi->bmiHeader.biSizeImage = SCREENWIDTH * SCREENHEIGHT;
+	pBmi->bmiHeader.biXPelsPerMeter = 72;
+	pBmi->bmiHeader.biYPelsPerMeter = 72;
+	pBmi->bmiHeader.biClrUsed = 0;
+	pBmi->bmiHeader.biClrImportant = 0;
+
+	ShowWindow(hWnd, SW_NORMAL);
+#else
     char*		displayname;
     char*		d;
     int			n;
@@ -817,6 +1132,7 @@ void I_InitGraphics(void)
 					attribmask,
 					&attribs );
 
+	XInstallColormap(X_display, X_cmap);
     XDefineCursor(X_display, X_mainWindow,
 		  createnullcursor( X_display, X_mainWindow ) );
 
@@ -911,7 +1227,7 @@ void I_InitGraphics(void)
 	screens[0] = (unsigned char *) (image->data);
     else
 	screens[0] = (unsigned char *) malloc (SCREENWIDTH * SCREENHEIGHT);
-
+#endif
 }
 
 

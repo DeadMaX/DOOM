@@ -41,12 +41,19 @@ rcsid[] = "$Id: r_data.c,v 1.4 1997/02/03 16:47:55 b1 Exp $";
 #include "doomstat.h"
 #include "r_sky.h"
 
-#ifdef LINUX
-#include  <alloca.h>
-#endif
+#include <malloc.h>
+#include <stdint.h>
 
 
 #include "r_data.h"
+
+#ifdef _MSC_VER
+#define PACKED_STRUCT( __Declaration__ ) __pragma(pack(push, 1)) struct __Declaration__ __pragma(pack(pop))
+#define strncasecmp _strnicmp
+#define strcasecmp _stricmp
+#elif defined(__GNUC__)
+#define PACKED_STRUCT( __Declaration__ ) struct __Declaration__ __attribute__((__packed__))
+#endif
 
 //
 // Graphics.
@@ -66,14 +73,14 @@ rcsid[] = "$Id: r_data.c,v 1.4 1997/02/03 16:47:55 b1 Exp $";
 // into the rectangular texture space using origin
 // and possibly other attributes.
 //
-typedef struct
+typedef PACKED_STRUCT(
 {
     short	originx;
     short	originy;
     short	patch;
     short	stepdir;
     short	colormap;
-} mappatch_t;
+}) mappatch_t;
 
 
 //
@@ -81,22 +88,22 @@ typedef struct
 // A DOOM wall texture is a list of patches
 // which are to be combined in a predefined order.
 //
-typedef struct
+typedef PACKED_STRUCT(
 {
     char		name[8];
-    boolean		masked;	
+    int 		masked;	
     short		width;
     short		height;
-    void		**columndirectory;	// OBSOLETE
+    int		    obsolete;	// OBSOLETE
     short		patchcount;
     mappatch_t	patches[1];
-} maptexture_t;
+}) maptexture_t;
 
 
 // A single patch from a texture definition,
 //  basically a rectangular area within
 //  the texture rectangle.
-typedef struct
+typedef PACKED_STRUCT(
 {
     // Block origin (allways UL),
     // which has allready accounted
@@ -104,13 +111,13 @@ typedef struct
     int		originx;	
     int		originy;
     int		patch;
-} texpatch_t;
+}) texpatch_t;
 
 
 // A maptexturedef_t describes a rectangular texture,
 //  which is composed of one or more mappatch_t structures
 //  that arrange graphic patches.
-typedef struct
+typedef PACKED_STRUCT(
 {
     // Keep name for switch changing, etc.
     char	name[8];		
@@ -122,7 +129,7 @@ typedef struct
     short	patchcount;
     texpatch_t	patches[1];		
     
-} texture_t;
+}) texture_t;
 
 
 
@@ -442,7 +449,6 @@ void R_InitTextures (void)
     int			temp2;
     int			temp3;
 
-    
     // Load the patch names from pnames.lmp.
     name[8] = 0;	
     names = W_CacheLumpName ("PNAMES", PU_STATIC);
@@ -479,13 +485,13 @@ void R_InitTextures (void)
     }
     numtextures = numtextures1 + numtextures2;
 	
-    textures = Z_Malloc (numtextures*4, PU_STATIC, 0);
-    texturecolumnlump = Z_Malloc (numtextures*4, PU_STATIC, 0);
-    texturecolumnofs = Z_Malloc (numtextures*4, PU_STATIC, 0);
-    texturecomposite = Z_Malloc (numtextures*4, PU_STATIC, 0);
-    texturecompositesize = Z_Malloc (numtextures*4, PU_STATIC, 0);
-    texturewidthmask = Z_Malloc (numtextures*4, PU_STATIC, 0);
-    textureheight = Z_Malloc (numtextures*4, PU_STATIC, 0);
+    textures = Z_Malloc (numtextures*sizeof(*textures), PU_STATIC, 0);
+    texturecolumnlump = Z_Malloc (numtextures* sizeof(*texturecolumnlump), PU_STATIC, 0);
+    texturecolumnofs = Z_Malloc (numtextures* sizeof(*texturecolumnofs), PU_STATIC, 0);
+    texturecomposite = Z_Malloc (numtextures* sizeof(*texturecomposite), PU_STATIC, 0);
+    texturecompositesize = Z_Malloc (numtextures* sizeof(*texturecompositesize), PU_STATIC, 0);
+    texturewidthmask = Z_Malloc (numtextures* sizeof(*texturewidthmask), PU_STATIC, 0);
+    textureheight = Z_Malloc (numtextures* sizeof(*textureheight), PU_STATIC, 0);
 
     totalwidth = 0;
     
@@ -639,7 +645,7 @@ void R_InitColormaps (void)
     lump = W_GetNumForName("COLORMAP"); 
     length = W_LumpLength (lump) + 255; 
     colormaps = Z_Malloc (length, PU_STATIC, 0); 
-    colormaps = (byte *)( ((int)colormaps + 255)&~0xff); 
+    colormaps = (byte *)( ((intptr_t)colormaps + 255)&~((intptr_t)0xff));
     W_ReadLump (lump,colormaps); 
 }
 

@@ -118,7 +118,7 @@ int 		snd_MusicVolume = 15;
 
 
 // whether songs are mus_paused
-static boolean		mus_paused;	
+static bool		mus_paused;	
 
 // music currently being played
 static musicinfo_t*	mus_playing=0;
@@ -677,7 +677,7 @@ S_ChangeMusic
 
     // load & register it
     music->data = (void *) W_CacheLumpNum(music->lumpnum, PU_MUSIC);
-    music->handle = I_RegisterSong(music->data);
+    music->handle = I_RegisterSong(music->data, W_LumpLength(music->lumpnum));
 
     // play it
     I_PlaySong(music->handle, looping);

@@ -1,4 +1,13 @@
 
+The goal of this fork is to make DOOM works on my system with as
+small as possible changes.
+
+The drawing algorithm does under/overflow and often read memory
+"off by one"
+
+
+=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+
 Here it is, at long last.  The DOOM source code is released for your
 non-profit use.  You still need real DOOM data to work with this code.
 If you don't actually own a real copy of one of the DOOMs, you should

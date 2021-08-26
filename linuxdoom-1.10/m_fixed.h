@@ -23,6 +23,7 @@
 #ifndef __M_FIXED__
 #define __M_FIXED__
 
+#include "doomtype.h"
 
 #ifdef __GNUG__
 #pragma interface

@@ -27,6 +27,10 @@ rcsid[] = "$Id: m_bbox.c,v 1.1 1997/02/03 22:45:10 b1 Exp $";
 #include <string.h>
 #include <stdio.h>
 
+#ifdef WIN32
+#include <WinSock2.h>
+#define ioctl ioctlsocket
+#else
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -34,6 +38,7 @@ rcsid[] = "$Id: m_bbox.c,v 1.1 1997/02/03 22:45:10 b1 Exp $";
 #include <unistd.h>
 #include <netdb.h>
 #include <sys/ioctl.h>
+#endif
 
 #include "i_system.h"
 #include "d_event.h"
@@ -47,7 +52,9 @@ rcsid[] = "$Id: m_bbox.c,v 1.1 1997/02/03 22:45:10 b1 Exp $";
 #endif
 #include "i_net.h"
 
-
+#ifndef IPPORT_USERRESERVED
+#define IPPORT_USERRESERVED 5000
+#endif
 
 
 
@@ -66,7 +73,7 @@ rcsid[] = "$Id: m_bbox.c,v 1.1 1997/02/03 22:45:10 b1 Exp $";
 #define htons(x) ntohs(x)
 
 void	NetSend (void);
-boolean NetListen (void);
+bool NetListen (void);
 
 
 //
@@ -243,10 +250,19 @@ int GetLocalAddress (void)
 //
 void I_InitNetwork (void)
 {
-    boolean		trueval = true;
+    bool		trueval = true;
     int			i;
     int			p;
     struct hostent*	hostentry;	// host information entry
+
+#ifdef WIN32
+    WSADATA wsaData;
+
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+        printf("WSAStartup failed\n");
+        return;
+    }
+#endif
 	
     doomcom = malloc (sizeof (*doomcom) );
     memset (doomcom, 0, sizeof(*doomcom) );

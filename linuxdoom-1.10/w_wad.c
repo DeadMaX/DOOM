@@ -30,12 +30,10 @@ rcsid[] = "$Id: w_wad.c,v 1.5 1997/02/03 16:47:57 b1 Exp $";
 #include <ctype.h>
 #include <sys/types.h>
 #include <string.h>
-#include <unistd.h>
 #include <malloc.h>
 #include <fcntl.h>
 #include <sys/stat.h>
-#include <alloca.h>
-#define O_BINARY		0
+#include <io.h>
 #endif
 
 #include "doomtype.h"
@@ -49,6 +47,10 @@ rcsid[] = "$Id: w_wad.c,v 1.5 1997/02/03 16:47:57 b1 Exp $";
 #include "w_wad.h"
 
 
+#ifdef _MSC_VER 
+#define strncasecmp _strnicmp
+#define strcasecmp _stricmp
+#endif
 
 
 
@@ -65,11 +67,6 @@ void**			lumpcache;
 
 
 #define strcmpi	strcasecmp
-
-void strupr (char* s)
-{
-    while (*s) { *s = toupper(*s); s++; }
-}
 
 int filelength (int handle) 
 { 

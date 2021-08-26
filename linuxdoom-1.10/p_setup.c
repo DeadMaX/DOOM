@@ -304,7 +304,7 @@ void P_LoadThings (int lump)
     int			i;
     mapthing_t*		mt;
     int			numthings;
-    boolean		spawn;
+    bool		spawn;
 	
     data = W_CacheLumpNum (lump,PU_STATIC);
     numthings = W_LumpLength (lump) / sizeof(mapthing_t);
@@ -533,7 +533,7 @@ void P_GroupLines (void)
     }
 	
     // build line tables for each sector	
-    linebuffer = Z_Malloc (total*4, PU_LEVEL, 0);
+    linebuffer = Z_Malloc (total*sizeof(*linebuffer), PU_LEVEL, 0);
     sector = sectors;
     for (i=0 ; i<numsectors ; i++, sector++)
     {
