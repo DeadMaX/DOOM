@@ -958,7 +958,7 @@ HMIDISTRM     outHandle;
 UINT deviceID;
 PATCHARRAY patches;
 PATCHARRAY drum_patches;
-MIDIHDR header;
+
 //
 // MUSIC API.
 // Still no music done.
@@ -1010,6 +1010,34 @@ static unsigned int minofuint(unsigned int a, unsigned int b)
 
 static int	looping=0;
 static int	musicdies=-1;
+#define BUFF_SIZE (0xffff / sizeof(DWORD))
+struct buffer_chain
+{
+    MIDIHDR header;
+    DWORD buffer[BUFF_SIZE];
+    struct buffer_chain* next;
+};
+static struct buffer_chain* buff_head;
+
+static void check_buff(struct buffer_chain** buff, int nb)
+{
+    if ((*buff)->header.dwBytesRecorded + nb < BUFF_SIZE)
+        return;
+    if ((*buff)->next)
+    {
+        (*buff)->next->header.dwBytesRecorded = 0;
+        (*buff) = (*buff)->next;
+        return;
+    }
+    (*buff)->next = malloc(sizeof(struct buffer_chain));
+    *buff = (*buff)->next;
+    (*buff)->next = NULL;
+
+    (*buff)->header.dwBufferLength = sizeof((*buff)->buffer);
+    (*buff)->header.dwBytesRecorded = 0;
+    (*buff)->header.dwFlags = 0;
+    (*buff)->header.lpData = (*buff)->buffer;
+}
 
 static void convert_mus(byte* mus)
 {
@@ -1023,15 +1051,20 @@ static void convert_mus(byte* mus)
         mus_endmesure = 0x50,
         mus_scoreend = 0x60
     } musevent;
+    static struct buffer_chain first_buff =
+    {
+        .header.lpData = first_buff.buffer,
+        .header.dwBytesRecorded = 0,
+        .header.dwBufferLength = sizeof(first_buff.buffer),
+        .header.dwFlags = 0
+    };
 
-    static DWORD buffer[0xffff / sizeof(DWORD)];
+    buff_head = &first_buff;
+    struct buffer_chain* cur_buff = buff_head;
+    cur_buff->header.dwBytesRecorded = 0;
+
     byte velocities[16] = { 0x7f, 0x7f, 0x7f, 0x7f, 0x7f, 0x7f, 0x7f, 0x7f, 
                             0x7f, 0x7f, 0x7f, 0x7f, 0x7f, 0x7f, 0x7f, 0x7f};
-
-    header.lpData = buffer;
-    header.dwBytesRecorded = 0;
-    header.dwBufferLength = sizeof(buffer);
-    header.dwFlags = 0;
 
     byte* p = mus;
     DWORD timer = 0;
@@ -1050,22 +1083,24 @@ static void convert_mus(byte* mus)
         switch (*p++ & 0x70)
         {
         case mus_releasekey:
-            buffer[header.dwBytesRecorded++] = timer; timer = 0;
-            buffer[header.dwBytesRecorded++] = 0;
-            buffer[header.dwBytesRecorded++] = (velocities[channel] << 16) | (((*p++) &0x7f) << 8) | (0x80) | channel;
+            check_buff(&cur_buff, 3);
+            cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = timer; timer = 0;
+            cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = 0;
+            cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = (velocities[channel] << 16) | (((*p++) &0x7f) << 8) | (0x80) | channel;
             break;
 
         case mus_presskey:
-            buffer[header.dwBytesRecorded++] = timer; timer = 0;
-            buffer[header.dwBytesRecorded++] = 0;
+            check_buff(&cur_buff, 3);
+            cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = timer; timer = 0;
+            cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = 0;
             if (!!(*p & 0x80))
             {
                 byte note = (*p++) & 0x7f;
                 velocities[channel] = (*p++) & 0x7f;
-                buffer[header.dwBytesRecorded++] = (velocities[channel] << 16) | (note << 8) | (0x90) | channel;
+                cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = (velocities[channel] << 16) | (note << 8) | (0x90) | channel;
             }
             else
-                buffer[header.dwBytesRecorded++] = (velocities[channel] << 16) | (((*p++) & 0x7f) << 8) | (0x90) | channel;
+                cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = (velocities[channel] << 16) | (((*p++) & 0x7f) << 8) | (0x90) | channel;
             break;
 
 
@@ -1073,9 +1108,10 @@ static void convert_mus(byte* mus)
         {
             DWORD pitch = (*p++) * 64;
             pitch = (pitch & 0x7f) | (pitch & 0x3f80) << 1;
-            buffer[header.dwBytesRecorded++] = timer; timer = 0;
-            buffer[header.dwBytesRecorded++] = 0;
-            buffer[header.dwBytesRecorded++] = (pitch << 8) | (0xE0) | channel;
+            check_buff(&cur_buff, 3);
+            cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = timer; timer = 0;
+            cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = 0;
+            cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = (pitch << 8) | (0xE0) | channel;
         }
             break;
 
@@ -1083,40 +1119,51 @@ static void convert_mus(byte* mus)
             switch (*p++)
             {
             case 10:
-                buffer[header.dwBytesRecorded++] = timer; timer = 0;
-                buffer[header.dwBytesRecorded++] = 0;
-                buffer[header.dwBytesRecorded++] = 0x78;
+                check_buff(&cur_buff, 3);
+                cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = timer; timer = 0;
+                cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = 0;
+                cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = 0x78;
                 break;
 
             case 11:
-                buffer[header.dwBytesRecorded++] = timer; timer = 0;
-                buffer[header.dwBytesRecorded++] = 0;
-                buffer[header.dwBytesRecorded++] = 0x7B;
+                check_buff(&cur_buff, 3);
+                cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = timer; timer = 0;
+                cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = 0;
+                cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = 0x7B;
                 break;
 
             case 12:
-                buffer[header.dwBytesRecorded++] = timer; timer = 0;
-                buffer[header.dwBytesRecorded++] = 0;
-                buffer[header.dwBytesRecorded++] = 0x7E;
+                check_buff(&cur_buff, 3);
+                cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = timer; timer = 0;
+                cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = 0;
+                cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = 0x7E;
                 break;
 
             case 13:
-                buffer[header.dwBytesRecorded++] = timer; timer = 0;
-                buffer[header.dwBytesRecorded++] = 0;
-                buffer[header.dwBytesRecorded++] = 0x7F;
+                check_buff(&cur_buff, 3);
+                cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = timer; timer = 0;
+                cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = 0;
+                cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = 0x7F;
                 break;
 
             case 14:
-                buffer[header.dwBytesRecorded++] = timer; timer = 0;
-                buffer[header.dwBytesRecorded++] = 0;
-                buffer[header.dwBytesRecorded++] = 0x79;
+                check_buff(&cur_buff, 3);
+                cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = timer; timer = 0;
+                cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = 0;
+                cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = 0x79;
                 break;
 
             case 15:
                 break;
 
             default:
-                header.dwBytesRecorded = 0;
+                for (struct buffer_chain* to_delete = buff_head->next, *next = buff_head->next; to_delete; to_delete = next)
+                {
+                    next = to_delete->next;
+                    free(to_delete);
+                }
+                buff_head->next = NULL;
+                buff_head->header.dwBytesRecorded = 0;
                 return;
             }
             break;
@@ -1126,67 +1173,83 @@ static void convert_mus(byte* mus)
             {
             case 0:
                 // change instrument
-                buffer[header.dwBytesRecorded++] = timer; timer = 0;
-                buffer[header.dwBytesRecorded++] = 0;
-                buffer[header.dwBytesRecorded++] = (((*p++) & 0x7f) << 8) | (0xC0) | channel;
+                check_buff(&cur_buff, 3);
+                cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = timer; timer = 0;
+                cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = 0;
+                cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = (((*p++) & 0x7f) << 8) | (0xC0) | channel;
                 break;
 
             case 1:
-                buffer[header.dwBytesRecorded++] = timer; timer = 0;
-                buffer[header.dwBytesRecorded++] = 0;
-                buffer[header.dwBytesRecorded++] = (minofuint(*p++, 0x7f) << 16) | (0x20 << 8) | (0xB0) | channel;
+                check_buff(&cur_buff, 3);
+                cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = timer; timer = 0;
+                cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = 0;
+                cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = (minofuint(*p++, 0x7f) << 16) | (0x20 << 8) | (0xB0) | channel;
             break;
 
             case 2:
-                buffer[header.dwBytesRecorded++] = timer; timer = 0;
-                buffer[header.dwBytesRecorded++] = 0;
-                buffer[header.dwBytesRecorded++] = (minofuint(*p++, 0x7f) << 16) | (0x01 << 8) | (0xB0) | channel;
+                check_buff(&cur_buff, 3);
+                cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = timer; timer = 0;
+                cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = 0;
+                cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = (minofuint(*p++, 0x7f) << 16) | (0x01 << 8) | (0xB0) | channel;
             break;
 
             case 3:
-                buffer[header.dwBytesRecorded++] = timer; timer = 0;
-                buffer[header.dwBytesRecorded++] = 0;
-                buffer[header.dwBytesRecorded++] = (minofuint(*p++, 0x7f) << 16) | (0x07 << 8) | (0xB0) | channel;
+                check_buff(&cur_buff, 3);
+                cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = timer; timer = 0;
+                cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = 0;
+                cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = (minofuint(*p++, 0x7f) << 16) | (0x07 << 8) | (0xB0) | channel;
             break;
 
             case 4:
-                buffer[header.dwBytesRecorded++] = timer; timer = 0;
-                buffer[header.dwBytesRecorded++] = 0;
-                buffer[header.dwBytesRecorded++] = (minofuint(*p++, 0x7f) << 16) | (0x0A << 8) | (0xB0) | channel;
+                check_buff(&cur_buff, 3);
+                cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = timer; timer = 0;
+                cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = 0;
+                cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = (minofuint(*p++, 0x7f) << 16) | (0x0A << 8) | (0xB0) | channel;
             break;
 
             case 5:
-                buffer[header.dwBytesRecorded++] = timer; timer = 0;
-                buffer[header.dwBytesRecorded++] = 0;
-                buffer[header.dwBytesRecorded++] = (minofuint(*p++, 0x7f) << 16) | (0x0B << 8) | (0xB0) | channel;
+                check_buff(&cur_buff, 3);
+                cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = timer; timer = 0;
+                cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = 0;
+                cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = (minofuint(*p++, 0x7f) << 16) | (0x0B << 8) | (0xB0) | channel;
             break;
 
             case 6:
-                buffer[header.dwBytesRecorded++] = timer; timer = 0;
-                buffer[header.dwBytesRecorded++] = 0;
-                buffer[header.dwBytesRecorded++] = (minofuint(*p++, 0x7f) << 16) | (0x5B << 8) | (0xB0) | channel;
+                check_buff(&cur_buff, 3);
+                cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = timer; timer = 0;
+                cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = 0;
+                cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = (minofuint(*p++, 0x7f) << 16) | (0x5B << 8) | (0xB0) | channel;
             break;
 
             case 7:
-                buffer[header.dwBytesRecorded++] = timer; timer = 0;
-                buffer[header.dwBytesRecorded++] = 0;
-                buffer[header.dwBytesRecorded++] = (minofuint(*p++, 0x7f) << 16) | (0x5D << 8) | (0xB0) | channel;
+                check_buff(&cur_buff, 3);
+                cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = timer; timer = 0;
+                cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = 0;
+                cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = (minofuint(*p++, 0x7f) << 16) | (0x5D << 8) | (0xB0) | channel;
             break;
 
             case 8:
-                buffer[header.dwBytesRecorded++] = timer; timer = 0;
-                buffer[header.dwBytesRecorded++] = 0;
-                buffer[header.dwBytesRecorded++] = (minofuint(*p++, 0x7f) << 16) | (0x40 << 8) | (0xB0) | channel;
+                check_buff(&cur_buff, 3);
+                cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = timer; timer = 0;
+                cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = 0;
+                cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = (minofuint(*p++, 0x7f) << 16) | (0x40 << 8) | (0xB0) | channel;
             break;
 
             case 9:
-                buffer[header.dwBytesRecorded++] = timer; timer = 0;
-                buffer[header.dwBytesRecorded++] = 0;
-                buffer[header.dwBytesRecorded++] = (minofuint(*p++, 0x7f) << 16) | (0x43 << 8) | (0xB0) | channel;
+                check_buff(&cur_buff, 3);
+                cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = timer; timer = 0;
+                cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = 0;
+                cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = (minofuint(*p++, 0x7f) << 16) | (0x43 << 8) | (0xB0) | channel;
                 break;
 
             default:
-                header.dwBytesRecorded = 0;
+                for (struct buffer_chain* to_delete = buff_head->next, *next = buff_head->next; to_delete; to_delete = next)
+                {
+                    next = to_delete->next;
+                    free(to_delete);
+                }
+                buff_head->next = NULL;
+                buff_head->header.dwBytesRecorded = 0;
                 return;
                 break;
             }
@@ -1196,15 +1259,25 @@ static void convert_mus(byte* mus)
             break;
 
         case mus_scoreend:
-            buffer[header.dwBytesRecorded++] = timer; timer = 0;
-            buffer[header.dwBytesRecorded++] = 0;
-            buffer[header.dwBytesRecorded++] = 0x78;
-            header.dwBytesRecorded *= sizeof(DWORD);
+            check_buff(&cur_buff, 3);
+            cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = timer; timer = 0;
+            cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = 0;
+            cur_buff->buffer[cur_buff->header.dwBytesRecorded++] = 0x78;
+
+            for (struct buffer_chain* to_delete = cur_buff->next, *next = cur_buff->next; to_delete; to_delete = next)
+            {
+                next = to_delete->next;
+                free(to_delete);
+            }
+            cur_buff->next = NULL;
+
+            for (struct buffer_chain* to_mult = buff_head; to_mult; to_mult = to_mult->next)
+                to_mult->header.dwBytesRecorded *= sizeof(DWORD);
             return;
             break;
 
         default:
-            header.dwBytesRecorded = 0;
+            cur_buff->header.dwBytesRecorded = 0;
             return;
             break;
         }
@@ -1263,17 +1336,20 @@ void I_PlaySong(int handle, int looping)
 
    convert_mus(((byte*)musics[handle].data) + musics[handle].data->offSong);
 
-   res = midiOutPrepareHeader((HMIDIOUT)outHandle, &header, sizeof(MIDIHDR));
-   if (FAILED(res))
-       exit(-1);
-   res = midiStreamOut(
-       outHandle,
-       &header,
-       sizeof(MIDIHDR)
-      );
+   for (struct buffer_chain* i = buff_head; i; i = i->next)
+   {
+       res = midiOutPrepareHeader((HMIDIOUT)outHandle, &i->header, sizeof(MIDIHDR));
+       if (FAILED(res))
+           exit(-1);
+       res = midiStreamOut(
+           outHandle,
+           &i->header,
+           sizeof(MIDIHDR)
+       );
+       if (FAILED(res))
+           exit(-1);
+   }
 
-   if (FAILED(res))
-       exit(-1);
    res = midiStreamRestart(outHandle);
    if (FAILED(res))
        exit(-1);
@@ -1301,7 +1377,10 @@ void I_StopSong(int handle)
   looping = 0;
   musicdies = 0;
   midiStreamStop(outHandle);
-  midiOutUnprepareHeader((HMIDIOUT)outHandle, &header, sizeof(MIDIHDR));
+  for (struct buffer_chain* i = buff_head; i; i = i->next)
+  {
+      midiOutUnprepareHeader((HMIDIOUT)outHandle, &i->header, sizeof(MIDIHDR));
+  }
 }
 
 void I_UnRegisterSong(int handle)
